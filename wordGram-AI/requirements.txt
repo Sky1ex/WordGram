@@ -1,0 +1,12 @@
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+transformers>=4.35.0
+torch>=2.1.0
+pydantic>=2.6.0
+python-multipart>=0.0.6
+tiktoken>=0.5.0
+sentencepiece>=0.1.99
+httpx>=0.25.0 
+
+# Примечание: Если возникает ошибка компиляции pydantic-core,
+# попробуйте установить пакеты по отдельности или используйте Python 3.8-3.12

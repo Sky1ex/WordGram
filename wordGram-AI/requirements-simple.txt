@@ -1,0 +1,14 @@
+# Упрощенная версия для установки без компиляции
+# Используйте этот файл, если возникают проблемы с pydantic-core
+
+# Установите пакеты по отдельности:
+# pip install --prefer-binary fastapi uvicorn[standard] transformers pydantic python-multipart
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+fastapi
+uvicorn[standard]
+transformers
+pydantic
+python-multipart
+
+# PyTorch устанавливается отдельно (см. инструкцию выше)
