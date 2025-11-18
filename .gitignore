@@ -1,0 +1,54 @@
+# Модели (слишком большие для git)
+wordGram-AI/model_FRED/
+wordGram-AiTraining/models/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Модели (общие паттерны)
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Данные
+*.jsonl
+*.csv
+
+# Логи
+logs/
+*.log
+wandb/
+tensorboard/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Временные файлы
+*.tmp
+*.temp
+
+# Node modules
+node_modules/
+
+# Virtual environments
+venv/
+env/
+mlenv/
+*.env
+

@@ -5,34 +5,93 @@ from typing import List, Optional
 import re
 import httpx
 import difflib
+import os
+from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import pipeline
 import torch
 
 # Инициализация
 print("=" * 60)
-print("WordGram Yandex Speller Backend - Инициализация")
+print("WordGram AI Backend - Инициализация")
 print("=" * 60)
 
-# Загрузка модели для исправления текста
-print("\n[1/2] Загрузка модели исправления текста...")
-print("⚠ ВНИМАНИЕ: При первом запуске модель будет скачана из Hugging Face")
-print("   Пожалуйста, не прерывайте процесс загрузки!\n")
+# Определяем путь к обученной модели
+# Модель находится в ../wordGram-AiTraining/models/grammar_corrector
+current_dir = Path(__file__).parent
+model_path = current_dir.parent / "wordGram-AiTraining" / "models" / "grammar_corrector"
+model_path = model_path.resolve()
 
-try:
-    # Используем ruT5 модель для исправления орфографии и пунктуации через seq2seq подход
-    print("   Загрузка модели ruT5-large для исправления текста...")
-    text_correction_tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruT5-large")
-    text_correction_model = AutoModelForSeq2SeqLM.from_pretrained("ai-forever/ruT5-large")
-    text_correction_model.eval()
-    print("✓ Модель исправления текста загружена успешно!")
-except KeyboardInterrupt:
-    print("\n\n❌ Загрузка модели прервана пользователем.")
-    print("   Пожалуйста, запустите сервер снова - загрузка продолжится с того места, где остановилась.")
-    exit(1)
-except Exception as e:
-    print(f"\n❌ Ошибка при загрузке модели исправления текста: {e}")
-    print("   Проверьте интернет-соединение и попробуйте снова.")
-    exit(1)
+# Префикс, использованный при обучении модели
+TRAINING_PREFIX = "Исправить грамматику и пунктуацию: "
+
+# Загрузка модели для исправления текста
+print("\n[1/2] Загрузка обученной модели исправления текста...")
+print(f"   Путь к модели: {model_path}")
+
+# Проверяем существование модели
+if not model_path.exists():
+    print(f"\n❌ Ошибка: Модель не найдена по пути: {model_path}")
+    print("   Убедитесь, что модель была обучена и находится в указанной директории.")
+    print("   Альтернатива: используйте базовую модель ai-forever/ruT5-large")
+    print("\n   Попытка загрузить базовую модель...")
+    try:
+        text_correction_tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruT5-large")
+        text_correction_model = AutoModelForSeq2SeqLM.from_pretrained("ai-forever/ruT5-large")
+        
+        # Перемещаем модель на GPU если доступен
+        if torch.cuda.is_available():
+            print("   Перемещение модели на GPU...")
+            text_correction_model = text_correction_model.to("cuda")
+            print(f"   Модель перемещена на GPU: {torch.cuda.get_device_name(0)}")
+        
+        text_correction_model.eval()
+        print("✓ Базовая модель загружена успешно (обученная модель не найдена)")
+        USE_TRAINED_MODEL = False
+    except Exception as e:
+        print(f"\n❌ Ошибка при загрузке базовой модели: {e}")
+        exit(1)
+else:
+    try:
+        print("   Загрузка токенизатора...")
+        text_correction_tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        print("   Загрузка обученной модели...")
+        text_correction_model = AutoModelForSeq2SeqLM.from_pretrained(str(model_path))
+        
+        # Перемещаем модель на GPU если доступен
+        if torch.cuda.is_available():
+            print("   Перемещение модели на GPU...")
+            text_correction_model = text_correction_model.to("cuda")
+            print(f"   Модель перемещена на GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            print("   GPU недоступен, используется CPU")
+        
+        text_correction_model.eval()
+        print("✓ Обученная модель загружена успешно!")
+        USE_TRAINED_MODEL = True
+    except KeyboardInterrupt:
+        print("\n\n❌ Загрузка модели прервана пользователем.")
+        print("   Пожалуйста, запустите сервер снова.")
+        exit(1)
+    except Exception as e:
+        print(f"\n⚠ Ошибка при загрузке обученной модели: {e}")
+        print("   Попытка загрузить базовую модель...")
+        try:
+            text_correction_tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruT5-large")
+            text_correction_model = AutoModelForSeq2SeqLM.from_pretrained("ai-forever/ruT5-large")
+            
+            # Перемещаем модель на GPU если доступен
+            if torch.cuda.is_available():
+                print("   Перемещение модели на GPU...")
+                text_correction_model = text_correction_model.to("cuda")
+                print(f"   Модель перемещена на GPU: {torch.cuda.get_device_name(0)}")
+            
+            text_correction_model.eval()
+            print("✓ Базовая модель загружена успешно (обученная модель не загрузилась)")
+            USE_TRAINED_MODEL = False
+        except Exception as e2:
+            print(f"\n❌ Ошибка при загрузке базовой модели: {e2}")
+            exit(1)
 
 print("\n[2/2] Система исправления текста готова к работе")
 print("=" * 60)
@@ -70,7 +129,7 @@ YANDEX_SPELLER_URL = "https://speller.yandex.net/services/spellservice.json/chec
 
 def correct_text_with_ai(text: str) -> str:
     """
-    Исправляет орфографические и пунктуационные ошибки в тексте используя модель ruT5-large
+    Исправляет орфографические и пунктуационные ошибки в тексте используя обученную модель
     
     Args:
         text: Текст с возможными ошибками
@@ -82,8 +141,13 @@ def correct_text_with_ai(text: str) -> str:
         return text
     
     try:
-        # Единственный промпт для корректора
-        prompt = f"Ты профессиональный корректор с обширными познаниями в русской филологии. Вычитай предоставленный текст, исправь орфографические, грамматические и пунктуационные ошибки. Ты не должен ничего дописывать или перефразировать. Тебе неодходимо выводить только исправленный текст.\n\nТекст: {text}"
+        # Используем префикс, который использовался при обучении модели
+        if USE_TRAINED_MODEL:
+            # Для обученной модели используем тот же префикс, что и при обучении
+            prompt = TRAINING_PREFIX + text
+        else:
+            # Для базовой модели используем более детальный промпт
+            prompt = f"Ты профессиональный корректор с обширными познаниями в русской филологии. Вычитай предоставленный текст, исправь орфографические, грамматические и пунктуационные ошибки. Ты не должен ничего дописывать или перефразировать. Тебе неодходимо выводить только исправленный текст который помечен тегами \"<TEXT>\" вот так: <TEXT> Сам текст <TEXT>.\n\nТекст: <TEXT> {text} <TEXT>"
         
         # Логирование перед отправкой запроса
         print(f"\n[AI Correction] Отправка запроса к модели:")
@@ -93,28 +157,53 @@ def correct_text_with_ai(text: str) -> str:
         
         # Токенизация
         print(f"  Токенизация промпта...")
+        # Определяем максимальную длину в зависимости от типа модели
+        max_input_length = 256 if USE_TRAINED_MODEL else 512
         inputs = text_correction_tokenizer(
             prompt,
             return_tensors="pt",
-            max_length=512,
+            max_length=max_input_length,
             truncation=True,
             padding=True
         )
-        print(f"  Размер входных токенов: {inputs.input_ids.shape}")
+        print(f"  Размер входных токенов: {inputs['input_ids'].shape}")
+        
+        # Перемещаем входные данные на то же устройство, что и модель
+        device = next(text_correction_model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         
         # Генерация с параметрами для T5
-        print(f"  Генерация исправленного текста...")
+        print(f"  Генерация исправленного текста (устройство: {device})...")
+        # Параметры генерации зависят от типа модели
+        if USE_TRAINED_MODEL:
+            # Для обученной модели используем параметры, близкие к тем, что использовались при обучении
+            max_output_length = min(256, len(text) + 50)  # Ограничиваем длину
+            generation_params = {
+                "max_length": max_output_length,
+                "num_beams": 3,  # Как в config: num_beams=3
+                "early_stopping": True,
+                "no_repeat_ngram_size": 2,
+                "repetition_penalty": 1.1,
+                "length_penalty": 1.0,
+                "do_sample": False,
+            }
+        else:
+            # Для базовой модели используем более агрессивные параметры
+            generation_params = {
+                "max_length": len(text) + 150,
+                "min_length": max(1, len(text) // 3),
+                "num_beams": 5,
+                "early_stopping": True,
+                "no_repeat_ngram_size": 3,
+                "repetition_penalty": 1.2,
+                "length_penalty": 1.0,
+                "do_sample": False,
+            }
+        
         with torch.no_grad():
             outputs = text_correction_model.generate(
-                inputs.input_ids,
-                max_length=len(text) + 150,  # Достаточно для исправлений
-                min_length=max(1, len(text) // 3),
-                num_beams=5,  # Увеличиваем для лучшего качества
-                early_stopping=True,
-                no_repeat_ngram_size=3,
-                repetition_penalty=1.2,
-                length_penalty=1.0,  # Сохраняем длину текста
-                do_sample=False,
+                inputs["input_ids"],
+                **generation_params
             )
         print(f"  Генерация завершена. Размер выходных токенов: {outputs.shape}")
         
@@ -123,52 +212,59 @@ def correct_text_with_ai(text: str) -> str:
         corrected_text = text_correction_tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(f"  Сырой результат модели: {corrected_text[:200]}..." if len(corrected_text) > 200 else f"  Сырой результат модели: {corrected_text}")
         
-        # Убираем возможные префиксы промпта из результата
-        # Ищем начало текста после промпта
-        text_marker = "Текст:"
-        if text_marker in corrected_text:
-            corrected_text = corrected_text.split(text_marker, 1)[-1].strip()
-        
-        # Также убираем возможные повторения инструкции
-        instruction_phrases = [
-            "Ты профессиональный корректор",
-            "Вычитай предоставленный текст",
-            "исправленный текст",
-            "Исправленный текст:",
-            "Исправленный текст",
-        ]
-        
-        for phrase in instruction_phrases:
-            if corrected_text.startswith(phrase):
-                # Находим где заканчивается инструкция и начинается текст
-                # Обычно после двоеточия или новой строки
-                if ":" in corrected_text:
-                    corrected_text = corrected_text.split(":", 1)[-1].strip()
-                elif "\n" in corrected_text:
-                    corrected_text = corrected_text.split("\n", 1)[-1].strip()
-                break
-        
-        # Убираем лишние фразы, которые модель может добавить
-        # Удаляем фразы типа "Ты не должен ничего дописывать или переписывать"
-        unwanted_phrases = [
-            "Ты не должен ничего дописывать или переписывать",
-            "Ты не должен ничего дописывать или перефразировать",
-            "не должен ничего дописывать",
-            "не должен переписывать",
-            "не должен перефразировать",
-        ]
-        
-        for phrase in unwanted_phrases:
-            # Удаляем фразу и все что после неё, если она найдена
-            if phrase.lower() in corrected_text.lower():
-                # Находим позицию фразы
-                idx = corrected_text.lower().find(phrase.lower())
-                if idx > 0:
-                    # Берем только текст до этой фразы
-                    corrected_text = corrected_text[:idx].strip()
-                    # Убираем возможные знаки препинания в конце
-                    corrected_text = re.sub(r'[.,!?:;]+$', '', corrected_text).strip()
+        # Обработка результата в зависимости от типа модели
+        if USE_TRAINED_MODEL:
+            # Обученная модель уже обучена на правильном формате, просто убираем префикс если он есть
+            if corrected_text.startswith(TRAINING_PREFIX):
+                corrected_text = corrected_text[len(TRAINING_PREFIX):].strip()
+        else:
+            # Для базовой модели нужно больше обработки
+            # Убираем возможные префиксы промпта из результата
+            # Ищем начало текста после промпта
+            text_marker = "Текст:"
+            if text_marker in corrected_text:
+                corrected_text = corrected_text.split(text_marker, 1)[-1].strip()
+            
+            # Также убираем возможные повторения инструкции
+            instruction_phrases = [
+                "Ты профессиональный корректор",
+                "Вычитай предоставленный текст",
+                "исправленный текст",
+                "Исправленный текст:",
+                "Исправленный текст",
+            ]
+            
+            for phrase in instruction_phrases:
+                if corrected_text.startswith(phrase):
+                    # Находим где заканчивается инструкция и начинается текст
+                    # Обычно после двоеточия или новой строки
+                    if ":" in corrected_text:
+                        corrected_text = corrected_text.split(":", 1)[-1].strip()
+                    elif "\n" in corrected_text:
+                        corrected_text = corrected_text.split("\n", 1)[-1].strip()
                     break
+            
+            # Убираем лишние фразы, которые модель может добавить
+            # Удаляем фразы типа "Ты не должен ничего дописывать или переписывать"
+            unwanted_phrases = [
+                "Ты не должен ничего дописывать или переписывать",
+                "Ты не должен ничего дописывать или перефразировать",
+                "не должен ничего дописывать",
+                "не должен переписывать",
+                "не должен перефразировать",
+            ]
+            
+            for phrase in unwanted_phrases:
+                # Удаляем фразу и все что после неё, если она найдена
+                if phrase.lower() in corrected_text.lower():
+                    # Находим позицию фразы
+                    idx = corrected_text.lower().find(phrase.lower())
+                    if idx > 0:
+                        # Берем только текст до этой фразы
+                        corrected_text = corrected_text[:idx].strip()
+                        # Убираем возможные знаки препинания в конце
+                        corrected_text = re.sub(r'[.,!?:;]+$', '', corrected_text).strip()
+                        break
         
         # Очистка и нормализация
         corrected_text = corrected_text.strip()
@@ -433,10 +529,17 @@ def map_yandex_errors_to_positions(yandex_errors: List[dict], original_text: str
 
 @app.get("/")
 def root():
+    model_info = {
+        "type": "trained" if USE_TRAINED_MODEL else "base",
+        "path": str(model_path) if USE_TRAINED_MODEL else "ai-forever/ruT5-large",
+        "prefix": TRAINING_PREFIX if USE_TRAINED_MODEL else "custom_prompt"
+    }
     return {
         "message": "WordGram Spell Check API (AI Text Correction)", 
         "status": "running",
-        "features": ["spelling_check", "punctuation_restoration", "context_aware_correction"]
+        "model": model_info,
+        "features": ["spelling_check", "punctuation_restoration", "context_aware_correction"],
+        "device": str(next(text_correction_model.parameters()).device) if hasattr(text_correction_model, 'parameters') else "unknown"
     }
 
 @app.post("/api/spell-check", response_model=SpellCheckResponse)
@@ -519,7 +622,11 @@ if __name__ == "__main__":
     print(f"\n🌐 Сервер запущен на http://localhost:{port}")
     print(f"   API доступен по адресу: http://localhost:{port}/api/spell-check")
     print("   Используется:")
-    print("   - ai-forever/ruT5-large (орфография + пунктуация)")
+    if USE_TRAINED_MODEL:
+        print(f"   - Обученная модель: {model_path}")
+        print("   - Префикс: 'Исправить грамматику и пунктуацию: '")
+    else:
+        print("   - Базовая модель: ai-forever/ruT5-large (fallback)")
     print("   Нажмите Ctrl+C для остановки\n")
     
     try:

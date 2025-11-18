@@ -1,52 +1,198 @@
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import re
+import httpx
+import difflib
+import os
+import time
+from pathlib import Path
+from transformers import M2M100ForConditionalGeneration, M2M100Tokenizer
 import torch
 
-# Load model and tokenizer
+# Инициализация
 print("=" * 60)
-print("WordGram AI Backend - Загрузка модели")
+print("WordGram AI Backend - Инициализация")
 print("=" * 60)
-print("\n[1/2] Загрузка токенизатора...")
+
+# Определяем путь к локальной модели RuM2M100-1.2B
+current_dir = Path(__file__).parent
+local_model_path = current_dir / "model_FRED"
+local_model_path = local_model_path.resolve()
+
+# Загрузка модели для исправления текста
+print("\n[1/2] Загрузка модели RuM2M100-1.2B...")
+print(f"   Путь к модели: {local_model_path}")
+
+# Проверяем существование локальной модели
+if not local_model_path.exists():
+    print(f"\n❌ Ошибка: Модель не найдена по пути: {local_model_path}")
+    print("   Убедитесь, что модель была скачана в папку model_FRED.")
+    print("   Альтернатива: модель загрузится из HuggingFace Hub автоматически")
+    print("\n   Попытка загрузить модель из HuggingFace Hub...")
+    try:
+        model_path = "ai-forever/RuM2M100-1.2B"
+        print("   Загрузка модели (это может занять некоторое время)...")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Загружаем на CPU сначала
+        text_correction_model = M2M100ForConditionalGeneration.from_pretrained(
+            model_path,
+            torch_dtype=torch.float32,
+            low_cpu_mem_usage=False
+        )
+        # Перемещаем на нужное устройство
+        if device == "cuda":
+            text_correction_model = text_correction_model.to(device)
+        text_correction_tokenizer = M2M100Tokenizer.from_pretrained(
+            model_path,
+            src_lang="ru",
+            tgt_lang="ru"
+        )
+        USE_LOCAL_MODEL = False
+        print(f"   ✓ Модель загружена из HuggingFace Hub на {device}")
+    except Exception as e:
+        print(f"\n❌ Ошибка при загрузке модели из HuggingFace: {e}")
+        exit(1)
+else:
+    print("   ✓ Локальная модель найдена, загружаем из локальной папки...")
+    try:
+        model_path = str(local_model_path)
+        print("   Загрузка модели (это может занять некоторое время)...")
+        print("   Загрузка весов модели в память...")
+        
+        # Определяем устройство заранее
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"   Загрузка модели на устройство: {device}")
+        
+        # Загружаем модель - пробуем разные варианты для избежания мета-тензоров
+        print("   Загрузка модели (это может занять время)...")
+        model_loaded = False
+        
+        # Вариант 1: Загрузка с pytorch_model.bin (более надежно)
+        if not model_loaded:
+            try:
+                print("   Попытка 1: Загрузка с pytorch_model.bin...")
+                text_correction_model = M2M100ForConditionalGeneration.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=False,
+                    use_safetensors=False  # Принудительно используем pytorch_model.bin
+                )
+                # Пробуем переместить на устройство для проверки
+                test_device = "cpu"  # Всегда начинаем с CPU для проверки
+                text_correction_model = text_correction_model.to(test_device)
+                # Если дошли сюда, модель загружена правильно
+                model_loaded = True
+                print("   ✓ Модель загружена с pytorch_model.bin")
+            except Exception as e1:
+                print(f"   ⚠ Не удалось загрузить с pytorch_model.bin: {str(e1)[:100]}")
+        
+        # Вариант 2: Загрузка с safetensors
+        if not model_loaded:
+            try:
+                print("   Попытка 2: Загрузка с safetensors...")
+                text_correction_model = M2M100ForConditionalGeneration.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=False,
+                    use_safetensors=True
+                )
+                # Пробуем переместить на устройство для проверки
+                test_device = "cpu"
+                text_correction_model = text_correction_model.to(test_device)
+                model_loaded = True
+                print("   ✓ Модель загружена с safetensors")
+            except Exception as e2:
+                print(f"   ⚠ Не удалось загрузить с safetensors: {str(e2)[:100]}")
+        
+        # Вариант 3: Загрузка без указания формата (автоматический выбор)
+        if not model_loaded:
+            try:
+                print("   Попытка 3: Загрузка с автоматическим выбором формата...")
+                text_correction_model = M2M100ForConditionalGeneration.from_pretrained(
+                    model_path,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=False
+                )
+                # Пробуем переместить на устройство для проверки
+                test_device = "cpu"
+                text_correction_model = text_correction_model.to(test_device)
+                model_loaded = True
+                print("   ✓ Модель загружена (автоматический формат)")
+            except Exception as e3:
+                print(f"   ❌ Все попытки загрузки не удались: {str(e3)[:100]}")
+                raise e3
+        
+        # Теперь перемещаем на нужное устройство (GPU или CPU)
+        if device == "cuda" and torch.cuda.is_available():
+            print("   Перемещение модели на GPU...")
+            try:
+                text_correction_model = text_correction_model.to(device)
+                print(f"   ✓ Модель перемещена на GPU: {torch.cuda.get_device_name(0)}")
+            except Exception as gpu_error:
+                print(f"   ⚠ Не удалось переместить на GPU: {gpu_error}")
+                print("   Модель остается на CPU")
+                device = "cpu"
+        else:
+            print("   Модель остается на CPU")
+            device = "cpu"
+        
+        text_correction_tokenizer = M2M100Tokenizer.from_pretrained(
+            model_path,
+            src_lang="ru",
+            tgt_lang="ru"
+        )
+        USE_LOCAL_MODEL = True
+        print(f"   ✓ Модель загружена из локальной папки на {device}")
+    except Exception as e:
+        print(f"\n⚠ Ошибка при загрузке локальной модели: {e}")
+        print("   Попытка загрузить модель из HuggingFace Hub...")
+        try:
+            model_path = "ai-forever/RuM2M100-1.2B"
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            # Загружаем на CPU сначала
+            text_correction_model = M2M100ForConditionalGeneration.from_pretrained(
+                model_path,
+                torch_dtype=torch.float32,
+                low_cpu_mem_usage=False
+            )
+            # Перемещаем на нужное устройство
+            if device == "cuda":
+                text_correction_model = text_correction_model.to(device)
+            text_correction_tokenizer = M2M100Tokenizer.from_pretrained(
+                model_path,
+                src_lang="ru",
+                tgt_lang="ru"
+            )
+            USE_LOCAL_MODEL = False
+            print(f"   ✓ Модель загружена из HuggingFace Hub на {device}")
+        except Exception as e2:
+            print(f"\n❌ Ошибка при загрузке модели из HuggingFace: {e2}")
+            exit(1)
+
+# Модель уже загружена на нужное устройство в блоке загрузки выше
+# Получаем устройство модели для дальнейшего использования
 try:
-    # Попробуем загрузить fast токенизатор (по умолчанию)
-    tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruT5-large")
-    print("✓ Токенизатор загружен успешно (fast)")
-except Exception as e:
-    print(f"⚠ Не удалось загрузить fast токенизатор: {e}")
-    print("Попытка загрузить медленный токенизатор...")
-    # Используем медленный токенизатор, если fast не работает
-    tokenizer = AutoTokenizer.from_pretrained("ai-forever/ruT5-large", use_fast=False)
-    print("✓ Токенизатор загружен успешно (slow)")
+    device = next(text_correction_model.parameters()).device
+    if torch.cuda.is_available() and device.type == "cuda":
+        print(f"   Модель на GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("   Модель на CPU")
+except:
+    device = "cpu"
+    print("   Модель на CPU (по умолчанию)")
 
-print("\n[2/2] Загрузка модели ruT5-large...")
-print("⚠ ВНИМАНИЕ: При первом запуске модель будет скачана из Hugging Face (~3GB)")
-print("   Это может занять несколько минут в зависимости от скорости интернета.")
-print("   Пожалуйста, не прерывайте процесс загрузки!\n")
+text_correction_model.eval()
+USE_TRAINED_MODEL = False  # Используем предобученную модель, не обученную нами
 
-try:
-    model = AutoModelForSeq2SeqLM.from_pretrained("ai-forever/ruT5-large")
-    print("\n✓ Модель загружена успешно!")
-except KeyboardInterrupt:
-    print("\n\n❌ Загрузка модели прервана пользователем.")
-    print("   Пожалуйста, запустите сервер снова - загрузка продолжится с того места, где остановилась.")
-    exit(1)
-except Exception as e:
-    print(f"\n❌ Ошибка при загрузке модели: {e}")
-    print("   Проверьте интернет-соединение и попробуйте снова.")
-    exit(1)
 
-# Set model to evaluation mode
-model.eval()
-
-print("\n" + "=" * 60)
+print("\n[2/2] Система исправления текста готова к работе")
+print("=" * 60)
 print("✓ Все компоненты загружены. Запуск сервера...")
 print("=" * 60 + "\n")
 
-app = FastAPI(title="WordGram Spell Check API")
+app = FastAPI(title="WordGram Spell Check API (Yandex Speller)")
 
 # Configure CORS
 app.add_middleware(
@@ -72,121 +218,401 @@ class SpellCheckResponse(BaseModel):
     errors: List[SpellError]
     correctedText: Optional[str] = None
 
-def correct_word_with_model(word: str) -> Optional[str]:
-    """Исправляет одно слово используя ruT5 модель с правильными префиксами задач T5"""
-    # Очищаем слово от знаков препинания для проверки
-    word_clean = word.strip('.,!?;:"()[]{}')
+# Yandex Speller API URL
+YANDEX_SPELLER_URL = "https://speller.yandex.net/services/spellservice.json/checkText"
+
+def correct_text_with_ai(text: str) -> str:
+    """
+    Исправляет орфографические и пунктуационные ошибки в тексте используя RuM2M100-1.2B модель
     
-    # Если слово слишком короткое или состоит только из знаков препинания, пропускаем
-    if len(word_clean) < 2:
-        return None
+    Args:
+        text: Текст с возможными ошибками
     
-    # T5 модели используют префиксы задач. Пробуем разные варианты префиксов
-    # для задач, которые могут помочь с исправлением орфографии
-    prompts = [
-        # Прямое исправление орфографии
-        f"исправить орфографию: {word_clean}",
-        # f"spell correct: {word_clean}",
-        # Парафразирование (может исправить ошибки)
-        # f"перефразировать: {word_clean}",
-        # f"paraphrase: {word_clean}",
-        # # Исправление текста
-        # f"исправить текст: {word_clean}",
-        # f"correct text: {word_clean}",
-        # # Простой вариант
-        # f"исправить: {word_clean}",
-    ]
+    Returns:
+        Исправленный текст
+    """
+    if not text or not text.strip():
+        return text
     
-    for prompt in prompts:
-        try:
-            # Токенизация с правильными параметрами для T5
-            inputs = tokenizer(
-                prompt,
-                return_tensors="pt",
-                max_length=128,
-                truncation=True,
-                padding=True
+    try:
+        # Логирование перед отправкой запроса
+        print(f"\n[AI Correction] Отправка запроса к модели:")
+        print(f"  Исходный текст: {text}")
+        print(f"  Длина текста: {len(text)} символов")
+        
+        # Токенизация для M2M100 (без префикса, модель работает напрямую с текстом)
+        # Согласно документации, токенизация должна быть простой
+        print(f"  Токенизация текста...")
+        encodings = text_correction_tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        print(f"  Размер входных токенов: {encodings['input_ids'].shape}")
+        print(f"  Входные токены (первые 10): {encodings['input_ids'][0, :min(10, encodings['input_ids'].shape[1])].tolist()}")
+        
+        # Перемещаем входные данные на то же устройство, что и модель
+        model_device = next(text_correction_model.parameters()).device
+        encodings = {k: v.to(model_device) for k, v in encodings.items()}
+        
+        # Получаем ID языка для русского (принудительный BOS токен)
+        forced_bos_token_id = text_correction_tokenizer.get_lang_id("ru")
+        print(f"  forced_bos_token_id (ru): {forced_bos_token_id}")
+        
+        # Вычисляем разумный max_length на основе длины входного текста
+        # Для encoder-decoder моделей max_length означает максимальную длину выходной последовательности
+        input_length = encodings['input_ids'].shape[1]
+        # Исправленный текст обычно немного длиннее оригинала, но не более чем в 2 раза
+        max_output_length = min(512, max(input_length + 50, 128))  # Минимум 128 токенов
+        
+        # Генерация согласно документации RuM2M100-1.2B
+        print(f"  Генерация исправленного текста (устройство: {model_device})...")
+        print(f"  Параметры: max_length={max_output_length}, input_length={input_length}")
+        start_time = time.time()
+        
+        with torch.no_grad():
+            generated_tokens = text_correction_model.generate(
+                **encodings,
+                forced_bos_token_id=forced_bos_token_id,
+                max_length=max_output_length,
+                min_length=max(1, input_length // 2),  # Минимальная длина - хотя бы половина входной длины
+                num_beams=5,  # Используем beam search для лучшего качества
+                do_sample=False,
+                early_stopping=False,  # Отключаем early_stopping для полной генерации
+                no_repeat_ngram_size=3,
+                repetition_penalty=1.2,
+                length_penalty=1.0,  # Нейтральный штраф за длину
+            )
+        
+        generation_time = time.time() - start_time
+        print(f"  Генерация завершена за {generation_time:.2f} секунд. Размер выходных токенов: {generated_tokens.shape}")
+        
+        # Логируем первые несколько токенов для отладки
+        if generated_tokens.shape[1] > 0:
+            first_tokens = generated_tokens[0, :min(10, generated_tokens.shape[1])].tolist()
+            print(f"  Первые токены результата: {first_tokens}")
+            # Декодируем первые токены без skip_special_tokens для отладки
+            first_tokens_text = text_correction_tokenizer.decode(first_tokens, skip_special_tokens=False)
+            print(f"  Первые токены (текст, со спец. токенами): {first_tokens_text[:100]}")
+        
+        # Декодирование результата
+        print(f"  Декодирование результата...")
+        answer = text_correction_tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Берем первый результат из списка
+        if isinstance(answer, list) and len(answer) > 0:
+            corrected_text = answer[0]
+            # Если результат пустой, пробуем декодировать без skip_special_tokens
+            if not corrected_text.strip():
+                print(f"  ⚠ Результат пустой после skip_special_tokens, пробуем без него...")
+                answer_no_skip = text_correction_tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+                if isinstance(answer_no_skip, list) and len(answer_no_skip) > 0:
+                    corrected_text = answer_no_skip[0]
+                    print(f"  Результат без skip_special_tokens: {corrected_text[:200]}")
+        else:
+            corrected_text = text
+        
+        print(f"  Сырой результат модели: {corrected_text[:200]}..." if len(corrected_text) > 200 else f"  Сырой результат модели: {corrected_text}")
+        
+        # # Очистка и нормализация результата
+        # corrected_text = corrected_text.strip()
+        
+        # # Нормализуем пробелы
+        # corrected_text = re.sub(r'\s+', ' ', corrected_text)
+        
+        # # Убираем множественные знаки препинания
+        # corrected_text = re.sub(r'([.,!?:;])\1+', r'\1', corrected_text)
+        
+        # # Убираем знаки препинания в начале
+        # corrected_text = re.sub(r'^[.,!?:;]+', '', corrected_text)
+        
+        # Если результат пустой или слишком короткий, возвращаем исходный текст
+        if not corrected_text or len(corrected_text) < len(text) * 0.3:
+            print(f"  ⚠ Результат слишком короткий, возвращаем исходный текст")
+            corrected_text = text
+        
+        print(f"  Очищенный результат: {corrected_text[:200]}..." if len(corrected_text) > 200 else f"  Очищенный результат: {corrected_text}")
+        print(f"  Длина результата: {len(corrected_text)} символов (исходный: {len(text)})")
+        print(f"[AI Correction] Запрос обработан успешно\n")
+        
+        return corrected_text
+    
+    except Exception as e:
+        print(f"Warning: Error correcting text with AI: {e}")
+        import traceback
+        print(traceback.format_exc())
+        # В случае ошибки возвращаем исходный текст
+        return text
+
+def find_text_errors_corrected(original_text: str, corrected_text: str) -> Dict[str, Any]:
+    """
+    Исправленный алгоритм, который правильно обрабатывает составные слова.
+    """
+    
+    # Если тексты идентичны, возвращаем пустой список ошибок
+    if original_text == corrected_text:
+        return {
+            "errors": [],
+            "correctedText": corrected_text
+        }
+    
+    errors = []
+    
+    # Разбиваем тексты на слова с сохранением пробелов и знаков препинания
+    def tokenize_with_positions(text):
+        # Используем более сложное регулярное выражение для сохранения структуры текста
+        pattern = r'(\S+\s*)'
+        tokens = []
+        pos = 0
+        for match in re.finditer(pattern, text):
+            token_text = match.group()
+            start = match.start()
+            end = match.end()
+            tokens.append({
+                'text': token_text,
+                'start': start,
+                'end': end,
+                'clean_text': token_text.strip()  # Текст без пробелов для сравнения
+            })
+            pos = end
+        return tokens
+    
+    original_tokens = tokenize_with_positions(original_text)
+    corrected_tokens = tokenize_with_positions(corrected_text)
+    
+    # Преобразуем в списки чистых текстов для difflib
+    original_token_texts = [t['clean_text'] for t in original_tokens]
+    corrected_token_texts = [t['clean_text'] for t in corrected_tokens]
+    
+    # Используем difflib для сравнения токенов
+    matcher = difflib.SequenceMatcher(None, original_token_texts, corrected_token_texts)
+    
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == 'replace':
+            # Замена одного или нескольких токенов
+            original_segment = original_tokens[i1:i2]
+            corrected_segment = corrected_tokens[j1:j2]
+            
+            # Определяем позицию в исходном тексте
+            start = original_tokens[i1]['start']
+            end = original_tokens[i2-1]['end']
+            
+            original_phrase = ''.join([t['text'] for t in original_segment]).strip()
+            corrected_phrase = ''.join([t['text'] for t in corrected_segment]).strip()
+            
+            # Проверяем, является ли это случаем составного слова
+            is_composite_word = (
+                len(original_segment) > 1 and 
+                len(corrected_segment) == 1 and
+                '-' in corrected_phrase
             )
             
-            # Генерация с параметрами, рекомендованными для T5
-            with torch.no_grad():
-                outputs = model.generate(
-                    inputs.input_ids,
-                    max_length=32,  # Для одного слова достаточно короткого вывода
-                    min_length=1,
-                    num_beams=3,  # Небольшое количество лучей для скорости
-                    early_stopping=True,
-                    no_repeat_ngram_size=2,
-                    repetition_penalty=1.2,  # Штраф за повторения
-                    length_penalty=0.6,  # Предпочтение более коротким ответам
-                    do_sample=False,  # Детерминированный режим
-                )
+            if is_composite_word:
+                # Это составное слово - обрабатываем как одну ошибку
+                errors.append({
+                    "word": original_phrase,
+                    "position": {
+                        "start": start,
+                        "end": end
+                    },
+                    "suggestions": [corrected_phrase],
+                    "severity": "error"
+                })
+            else:
+                # Обычная замена
+                errors.append({
+                    "word": original_phrase,
+                    "position": {
+                        "start": start,
+                        "end": end
+                    },
+                    "suggestions": [corrected_phrase],
+                    "severity": "error"
+                })
+        
+        elif tag == 'delete':
+            # Удаление токенов
+            start = original_tokens[i1]['start']
+            end = original_tokens[i2-1]['end']
             
-            # Декодирование
-            corrected = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            corrected = corrected.strip()
+            deleted_phrase = ''.join([t['text'] for t in original_tokens[i1:i2]]).strip()
             
-            # Убираем возможные префиксы
-            prefixes_to_remove = [
-                "исправить орфографию:",
-                "spell correct:",
-                "перефразировать:",
-                "paraphrase:",
-                "исправить текст:",
-                "correct text:",
-                "исправить:",
-                "Исправить орфографию:",
-                "Исправить слово:",
-                "Орфография:",
-                "Исправь:",
-                "Исправить:",
-                "correction:",
-            ]
+            errors.append({
+                "word": deleted_phrase,
+                "position": {
+                    "start": start,
+                    "end": end
+                },
+                "suggestions": [""],
+                "severity": "error"
+            })
+        
+        elif tag == 'insert':
+            # Вставка токенов
+            if i1 < len(original_tokens):
+                start = original_tokens[i1]['start']
+            else:
+                start = len(original_text)
             
-            for prefix in prefixes_to_remove:
-                if corrected.lower().startswith(prefix.lower()):
-                    corrected = corrected[len(prefix):].strip()
-                    break
+            inserted_phrase = ''.join([t['text'] for t in corrected_tokens[j1:j2]]).strip()
             
-            # Фильтруем некорректные результаты
-            # Если результат содержит много точек/запятых - пропускаем
-            if re.search(r'[.,]{2,}', corrected):
-                continue
+            # Пропускаем вставки, которые являются частью составных слов
+            # (они уже обработаны в блоке 'replace')
+            is_part_of_composite = any(
+                error['position']['start'] <= start <= error['position']['end'] 
+                for error in errors
+            )
             
-            # Если результат слишком длинный (больше чем в 2 раза длиннее оригинала) - пропускаем
-            if len(corrected) > len(word_clean) * 2 + 5:  # Небольшой запас
-                continue
-            
-            # Если результат содержит пробелы (не одно слово) - пропускаем
-            if ' ' in corrected:
-                continue
-            
-            # Если результат пустой - пропускаем
-            if not corrected:
-                continue
-            
-            # Если результат равен оригиналу - слово правильное
-            if corrected.lower() == word_clean.lower():
-                return None
-            
-            # Проверяем, что результат - разумное слово (только буквы)
-            if re.match(r'^[а-яА-ЯёЁa-zA-Z]+$', corrected):
-                # Дополнительная проверка: результат должен быть похож на оригинал
-                # (не слишком отличаться по длине)
-                if abs(len(corrected) - len(word_clean)) <= len(word_clean) * 0.5 + 2:
-                    return corrected
-                
-        except Exception as e:
-            # Логируем ошибку для отладки
-            print(f"Warning: Error with prompt '{prompt}': {e}")
-            continue
+            if not is_part_of_composite and inserted_phrase:
+                errors.append({
+                    "word": "",
+                    "position": {
+                        "start": start,
+                        "end": start
+                    },
+                    "suggestions": [inserted_phrase],
+                    "severity": "error"
+                })
     
-    # Если ни один промпт не дал хорошего результата, возвращаем None
-    return None
+    # Удаляем дубликаты и сортируем
+    unique_errors = []
+    seen_starts = set()
+    
+    for error in errors:
+        if error['position']['start'] not in seen_starts:
+            unique_errors.append(error)
+            seen_starts.add(error['position']['start'])
+    
+    unique_errors.sort(key=lambda x: x['position']['start'])
+    
+    return {
+        "errors": unique_errors,
+        "correctedText": corrected_text
+    }
+
+def find_text_errors_optimized(original_text: str, corrected_text: str) -> Dict[str, Any]:
+    """
+    Оптимизированный алгоритм с улучшенной обработкой всех типов ошибок.
+    """
+    
+    # Если тексты идентичны, возвращаем пустой список ошибок
+    if original_text == corrected_text:
+        return {
+            "errors": [],
+            "correctedText": corrected_text
+        }
+    
+    errors = []
+    
+    # Используем difflib для сравнения на уровне символов
+    matcher = difflib.SequenceMatcher(None, original_text, corrected_text)
+    
+    # Собираем все изменения
+    changes = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != 'equal':
+            changes.append((tag, i1, i2, j1, j2))
+    
+    # Группируем близкие изменения
+    grouped_changes = []
+    i = 0
+    while i < len(changes):
+        current_tag, current_i1, current_i2, current_j1, current_j2 = changes[i]
+        
+        # Ищем следующие изменения, которые близки к текущему
+        group = [(current_tag, current_i1, current_i2, current_j1, current_j2)]
+        j = i + 1
+        while j < len(changes):
+            next_tag, next_i1, next_i2, next_j1, next_j2 = changes[j]
+            
+            # Если изменения близки (в пределах 10 символов), группируем их
+            if next_i1 - current_i2 <= 10:
+                group.append((next_tag, next_i1, next_i2, next_j1, next_j2))
+                current_i2 = next_i2
+                j += 1
+            else:
+                break
+        
+        # Объединяем группу изменений в одну ошибку
+        if len(group) == 1:
+            # Одиночное изменение
+            tag, i1, i2, j1, j2 = group[0]
+            
+            # Определяем границы слова в оригинальном тексте
+            start = i1
+            end = i2
+            
+            # Расширяем границы до целых слов
+            while start > 0 and original_text[start-1].isalnum():
+                start -= 1
+            while end < len(original_text) and original_text[end].isalnum():
+                end += 1
+            
+            original_word = original_text[start:end]
+            
+            # Определяем границы слова в исправленном тексте
+            corr_start = j1
+            corr_end = j2
+            while corr_start > 0 and corrected_text[corr_start-1].isalnum():
+                corr_start -= 1
+            while corr_end < len(corrected_text) and corrected_text[corr_end].isalnum():
+                corr_end += 1
+            
+            corrected_word = corrected_text[corr_start:corr_end]
+            
+            errors.append({
+                "word": original_word,
+                "position": {
+                    "start": start,
+                    "end": end
+                },
+                "suggestions": [corrected_word],
+                "severity": "error"
+            })
+        else:
+            # Группа изменений - вероятно, составное слово
+            start = group[0][1]
+            end = group[-1][2]
+            
+            # Определяем исправленный текст для этой группы
+            corr_start = group[0][3]
+            corr_end = group[-1][4]
+            corrected_segment = corrected_text[corr_start:corr_end]
+            
+            original_segment = original_text[start:end]
+            
+            errors.append({
+                "word": original_segment,
+                "position": {
+                    "start": start,
+                    "end": end
+                },
+                "suggestions": [corrected_segment],
+                "severity": "error"
+            })
+        
+        i = j
+    
+    # Сортируем ошибки по позиции
+    errors.sort(key=lambda x: x['position']['start'])
+    
+    return {
+        "errors": errors,
+        "correctedText": corrected_text
+    }
+
 
 @app.get("/")
 def root():
-    return {"message": "WordGram Spell Check API", "status": "running"}
+    model_info = {
+        "type": "trained" if USE_TRAINED_MODEL else "base",
+        "path": str(local_model_path) if USE_LOCAL_MODEL else "ai-forever/RuM2M100-1.2B",
+        "source": "local" if USE_LOCAL_MODEL else "huggingface",
+        "model_name": "RuM2M100-1.2B"
+    }
+    return {
+        "message": "WordGram Spell Check API (AI Text Correction)", 
+        "status": "running",
+        "model": model_info,
+        "features": ["spelling_check", "punctuation_restoration", "context_aware_correction"],
+        "device": str(next(text_correction_model.parameters()).device) if hasattr(text_correction_model, 'parameters') else "unknown"
+    }
 
 @app.post("/api/spell-check", response_model=SpellCheckResponse)
 async def spell_check(request: SpellCheckRequest):
@@ -195,43 +621,20 @@ async def spell_check(request: SpellCheckRequest):
             return SpellCheckResponse(errors=[], correctedText=request.text)
         
         original_text = request.text
-        errors = []
         
-        # Проверяем каждое слово отдельно через модель
-        words_with_positions = []
-        for match in re.finditer(r'\S+', original_text):
-            word = match.group()
-            words_with_positions.append({
-                'word': word,
-                'start': match.start(),
-                'end': match.end()
-            })
+        # Используем ИИ модель для исправления текста (орфография + пунктуация)
+        # Модель учитывает контекст и правильно исправляет текст
+        corrected_text = correct_text_with_ai(original_text)
         
-        # Проверяем каждое слово через модель
-        corrected_text = original_text
-        for item in words_with_positions:
-            word = item['word']
-            corrected = correct_word_with_model(word)
-            
-            if corrected and corrected.lower() != word.lower():
-                # Найдена ошибка
-                errors.append({
-                    "word": word,
-                    "position": {"start": item['start'], "end": item['end']},
-                    "suggestions": [corrected],
-                    "severity": "error"
-                })
+        import json
+        # Находим все ошибки (орфография + пунктуация) через сравнение с исправленным текстом
+        # all_errors = json.dumps(find_text_errors_optimized(original_text, corrected_text), ensure_ascii=False, indent=2)
+        errors_result = find_text_errors_optimized(original_text, corrected_text)
+        # Извлекаем список ошибок из словаря
+        all_errors = errors_result.get("errors", [])
+        # и правильно обрабатывает пробелы и пунктуацию
+        final_corrected_text = corrected_text
         
-        # Формируем исправленный текст, заменяя слова с ошибками
-        if errors:
-            corrected_text = original_text
-            # Заменяем слова в обратном порядке, чтобы позиции не сдвигались
-            for error in sorted(errors, key=lambda x: x['position']['start'], reverse=True):
-                if error['suggestions']:
-                    suggestion = error['suggestions'][0]
-                    start = error['position']['start']
-                    end = error['position']['end']
-                    corrected_text = corrected_text[:start] + suggestion + corrected_text[end:]
         
         # Конвертируем в SpellError объекты
         spell_errors = [
@@ -241,12 +644,12 @@ async def spell_check(request: SpellCheckRequest):
                 suggestions=err["suggestions"],
                 severity=err.get("severity", "error")
             )
-            for err in errors
+            for err in all_errors
         ]
         
         return SpellCheckResponse(
             errors=spell_errors,
-            correctedText=corrected_text if corrected_text != original_text else None
+            correctedText=final_corrected_text if final_corrected_text != original_text else None
         )
     except Exception as e:
         import traceback
@@ -289,6 +692,11 @@ if __name__ == "__main__":
     
     print(f"\n🌐 Сервер запущен на http://localhost:{port}")
     print(f"   API доступен по адресу: http://localhost:{port}/api/spell-check")
+    print("   Используется:")
+    if USE_LOCAL_MODEL:
+        print(f"   - Локальная модель: {local_model_path}")
+    else:
+        print("   - Модель из HuggingFace Hub: ai-forever/RuM2M100-1.2B")
     print("   Нажмите Ctrl+C для остановки\n")
     
     try:
@@ -304,3 +712,4 @@ if __name__ == "__main__":
         else:
             print(f"\n❌ Ошибка запуска сервера: {e}")
         exit(1)
+

@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordGram Settings</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 350px;
+      padding: 20px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #f9fafb;
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      color: #1f2937;
+      margin-bottom: 5px;
+    }
+
+    .header p {
+      font-size: 14px;
+      color: #6b7280;
+    }
+
+    .section {
+      background: white;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #1f2937;
+      margin-bottom: 12px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    .form-group:last-child {
+      margin-bottom: 0;
+    }
+
+    label {
+      display: block;
+      font-size: 14px;
+      font-weight: 500;
+      color: #374151;
+      margin-bottom: 8px;
+    }
+
+    input[type="text"],
+    input[type="url"] {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      font-family: inherit;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]:focus,
+    input[type="url"]:focus {
+      outline: none;
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+
+    .button {
+      width: 100%;
+      padding: 10px 16px;
+      background-color: #6366f1;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color 0.2s;
+      font-family: inherit;
+    }
+
+    .button:hover {
+      background-color: #4f46e5;
+    }
+
+    .button:active {
+      transform: scale(0.98);
+    }
+
+    .button:disabled {
+      background-color: #9ca3af;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 12px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .status.success {
+      background-color: #d1fae5;
+      color: #065f46;
+    }
+
+    .status.error {
+      background-color: #fee2e2;
+      color: #991b1b;
+    }
+
+    .status.info {
+      background-color: #dbeafe;
+      color: #1e40af;
+    }
+
+    .status.hidden {
+      display: none;
+    }
+
+    .info-text {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 8px;
+    }
+
+    .toggle-section {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background-color: #d1d5db;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+
+    .toggle-switch.active {
+      background-color: #6366f1;
+    }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background-color: white;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch.active::after {
+      transform: translateX(20px);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>WordGram</h1>
+    <p>Проверка орфографии</p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Настройки API</div>
+    <div class="form-group">
+      <label for="apiUrl">URL API сервера:</label>
+      <input type="url" id="apiUrl" placeholder="http://localhost:8000" />
+      <div class="info-text">Укажите адрес вашего WordGram API сервера</div>
+    </div>
+    <button class="button" id="saveApiUrl">Сохранить</button>
+    <div class="status hidden" id="apiStatus"></div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Статус</div>
+    <div class="form-group">
+      <div class="toggle-section">
+        <label style="margin-bottom: 0;">Включить проверку</label>
+        <div class="toggle-switch" id="enableToggle"></div>
+      </div>
+      <div class="info-text">Включите или выключите проверку орфографии на всех страницах</div>
+    </div>
+    <div class="status hidden" id="statusMessage"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
+

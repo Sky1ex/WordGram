@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: wordGram_backend
+    lifetime: 86400000
+  security:
+    user:
+      name: admin
+      password: password
+  datasource:
+    url: jdbc:postgresql://localhost:5432/wordGram_backend
+    username: postgres
+    password: admin
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true

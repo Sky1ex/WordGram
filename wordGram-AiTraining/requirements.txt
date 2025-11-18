@@ -1,0 +1,25 @@
+# Основные зависимости для обучения модели
+torch>=2.0.0
+transformers>=4.35.0
+datasets>=2.14.0
+sentencepiece>=0.1.99
+accelerate>=0.24.0
+
+# Метрики для оценки
+evaluate>=0.4.0
+sacrebleu>=2.3.0
+rouge-score>=0.1.2
+
+# Дополнительные утилиты
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Для работы с данными
+tqdm>=4.66.0
+
+# Для загрузки датасетов
+urllib3>=2.0.0
+
+# Опционально: для логирования (tensorboard или wandb)
+# tensorboard>=2.14.0
+# wandb>=0.15.0
